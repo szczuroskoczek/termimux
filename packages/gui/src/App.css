@@ -8,13 +8,27 @@
   display: flex;
   flex-direction: column;
   background-color: #1e1e1e;
-  padding: 1rem;
 }
 
-.terminal-container {
+.control-pane {
+  padding: 0.5rem;
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #444;
+}
+
+.terminal-grid {
   flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-auto-rows: 1fr;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  overflow: auto;
+}
+
+.terminal-cell {
   background-color: #1e1e1e;
   border-radius: 4px;
-  padding: 0.5rem;
   overflow: hidden;
+  position: relative;
 }
