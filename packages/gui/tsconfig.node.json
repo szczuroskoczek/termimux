@@ -18,7 +18,12 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    /* Node.js configuration */
+    "composite": true,
+    "allowSyntheticDefaultImports": true,
+    "outDir": "./dist"
   },
   "include": ["vite.config.ts"]
 }
