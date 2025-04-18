@@ -39,6 +39,25 @@ function App() {
         const t = terms.find((t) => t.id === msg.id);
         if (t) t.term.write(msg.data);
       }
+      else if (msg.type === 'layouts') {
+        msg.data.forEach(([id, layout]: [string, { cols: number; rows: number; x: number; y: number }]) => {
+          addTermSlot(id);
+          const term = terms.find((t) => t.id === id);
+          if (term) {
+            term.fit.fit();
+            // Apply layout (e.g., position and size)
+          }
+        });
+      }
+      else if (msg.type === 'resized') {
+        const term = terms.find((t) => t.id === msg.id);
+        if (term) {
+          term.fit.fit();
+        }
+      }
+      else if (msg.type === 'moved') {
+        // Handle terminal move (e.g., update UI position)
+      }
     };
 
     return () => {

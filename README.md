@@ -30,6 +30,7 @@
 - [Contributing](#contributing)
 - [License](#license)
 - [Roadmap](#roadmap)
+- [Synchronization and Layout Management](#synchronization-and-layout-management)
 
 ---
 
@@ -228,6 +229,18 @@ This project is licensed under the MIT License. See [LICENSE](LICENSE) for detai
 - [ ] Authentication & user sessions
 - [ ] Integrated logging & metrics
 - [ ] Electron packaging for desktop
+
+---
+
+## Synchronization and Layout Management
+
+TermiMux now supports full synchronization of terminal sessions and layout management. This means:
+
+- **Shared Sessions**: All connected users see the same terminal sessions, including their sizes and positions.
+- **Dynamic Layout**: The server manages terminal sizes and positions, ensuring consistent layout across all clients.
+- **Future Features**: Resize, move, and zoom controls for terminals will be added soon.
+
+This functionality ensures that the server maintains a single source of truth for terminal states, enabling seamless collaboration and advanced layout features.
 
 ---
 
