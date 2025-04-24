@@ -1,0 +1,32 @@
+{
+  "name": "service",
+  "version": "1.0.0",
+  "description": "TermiMux backend service",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "concurrently -k -n TYPE,CMP,RUN -c yellow,cyan,green \"npm run typecheck:watch\" \"npm run build:watch\" \"npm run serve\"",
+    "typecheck": "tsc --noEmit",
+    "typecheck:watch": "tsc --noEmit --watch",
+    "build": "swc src -d dist",
+    "build:watch": "swc src -d dist --watch",
+    "serve": "nodemon dist/index.js",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@termimux/types": "workspace:*",
+    "express": "^4.19.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.4.0",
+    "@swc/cli": "^0.1.62",
+    "concurrently": "^8.2.2",
+    "nodemon": "^3.1.9",
+    "@types/node": "^20.14.19",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

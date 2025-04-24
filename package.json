@@ -1,0 +1,22 @@
+{
+  "name": "termimux",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter service dev\" \"pnpm --filter gui dev\"",
+    "build": "pnpm --filter types build && pnpm --filter service build && pnpm --filter gui build",
+    "start": "pnpm --filter service start",
+    "lint": "pnpm --filter gui lint"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.6.4",
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "nodemon": "^3.1.9",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}

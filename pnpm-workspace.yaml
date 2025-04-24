@@ -1,0 +1,6 @@
+packages:
+  - packages/types
+  - packages/server
+  - packages/gui
+onlyBuiltDependencies:
+  - node-pty

@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    /* Base Options */
+    "target": "ES2020",
+    "module": "ESNext", // Use ESNext for modern module features
+    "moduleResolution": "bundler", // Align with modern bundler expectations
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true, // Ensure files can be safely transpiled individually
+    "noEmit": true, // This root config doesn't emit, relies on package builds
+
+    /* Type Checking */
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+
+  },
+  /* Project References: Define the build order and dependencies between packages */
+  "references": [
+    { "path": "./packages/types" },
+    { "path": "./packages/server" },
+    { "path": "./packages/gui" }
+  ],
+  /* Files included by the root project (usually none, as packages handle their own files) */
+  "files": [],
+  "include": [],
+  "exclude": ["node_modules", "**/dist"]
+}
