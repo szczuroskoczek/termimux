@@ -6,13 +6,39 @@ import {
   WsToServerResize,
   WsToServerInput,
   WsToServerClose,
-  WsToServerRequestHistory, // Added
-  WsToClientHistoryChunk, // Added
+  WsToServerRequestHistory,
+  WsToClientHistoryChunk,
   WsToClientOutput,
-  WsToClientScene
+  WsToClientScene,
 } from "@termimux/types";
 
-// --- Callbacks & State Types --- 
+// --- Layout Persistence Helpers ---
+const LAYOUTS_KEY = "termimux_layouts";
+function loadLayouts(): Record<
+  string,
+  { x: number; y: number; w: number; h: number }
+> {
+  try {
+    const raw = localStorage.getItem(LAYOUTS_KEY);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error("Failed to load layouts from localStorage:", err);
+  }
+  return {};
+}
+function saveLayouts(
+  layouts: Record<string, { x: number; y: number; w: number; h: number }>
+): void {
+  try {
+    localStorage.setItem(LAYOUTS_KEY, JSON.stringify(layouts));
+  } catch (err) {
+    console.error("Failed to save layouts to localStorage:", err);
+  }
+}
+
+// --- Callbacks & State Types ---
 
 interface TerminalCallbacks {
   onData: (data: string) => void;
@@ -21,9 +47,12 @@ interface TerminalCallbacks {
 }
 
 export interface TerminalState extends TermiMuxTerminal {
-  x: number; y: number; w: number; h: number; // Layout
-  isHistoryView: boolean; // Is the user viewing scrollback?
-  scrollbackOffset: number; // How many lines back from the end?
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  isHistoryView: boolean;
+  scrollbackOffset: number;
 }
 
 interface TermiMuxState {
@@ -44,11 +73,9 @@ interface TermiMuxState {
     id: string,
     layout: { x: number; y: number; w: number; h: number }
   ) => void;
-  // History actions
   enterHistoryView: (id: string) => void;
   exitHistoryView: (id: string) => void;
   scrollHistory: (id: string, direction: "up" | "down") => void;
-  // Callback registration
   registerTerminalCallbacks: (
     id: string,
     onData: (data: string) => void,
@@ -57,11 +84,7 @@ interface TermiMuxState {
   ) => () => void;
 }
 
-// --- Utility --- 
-
-const SCROLL_LINES_PER_SCREEN = 10; // How many lines to jump when scrolling history
-
-// --- Zustand Store --- 
+const SCROLL_LINES_PER_SCREEN = 10;
 
 const useWsConnection = create<TermiMuxState>((set, get) => {
   let ws: WebSocket | null = null;
@@ -82,13 +105,12 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
       console.log(`WS: Scheduling reconnect in ${reconnectDelay / 1000}s...`);
       reconnectTimer = setTimeout(() => {
         if (get().connectionState === WebSocket.CLOSED) {
-           get().connect();
+          get().connect();
         }
       }, reconnectDelay);
     }
   };
 
-  // Helper to send messages safely
   const sendMessage = (message: WsToServer) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
@@ -104,7 +126,6 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
     connectionState: WebSocket.CLOSED,
     terminals: {},
 
-    // --- Connection Management ---
     connect: () => {
       if (ws && ws.readyState !== WebSocket.CLOSED) return;
       clearReconnectTimer();
@@ -125,66 +146,83 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
         socket.onmessage = (event) => {
           try {
             const msg = JSON.parse(event.data.toString()) as WsToClient;
-            const state = get(); // Get current state for checks
+            const state = get();
 
             switch (msg.type) {
               case "scene": {
                 const serverTerminals = msg.data.terminals;
+                const persistedLayouts = loadLayouts();
                 set((currentState) => {
                   const existingTerminals = currentState.terminals;
                   const newTerminals: Record<string, TerminalState> = {};
+
                   serverTerminals.forEach((serverTerm) => {
                     const existing = existingTerminals[serverTerm.id];
+                    const persisted = persistedLayouts[serverTerm.id];
                     newTerminals[serverTerm.id] = {
-                      x: existing?.x ?? 0,
-                      y: existing?.y ?? 0,
-                      w: existing?.w ?? 6,
-                      h: existing?.h ?? 4,
+                      x: existing?.x ?? persisted?.x ?? 0,
+                      y: existing?.y ?? persisted?.y ?? 0,
+                      w: existing?.w ?? persisted?.w ?? 6,
+                      h: existing?.h ?? persisted?.h ?? 4,
                       ...serverTerm,
-                      // Reset history view on scene update (simplification)
-                      isHistoryView: existing?.isHistoryView ?? false, // Keep if possible?
+                      isHistoryView: existing?.isHistoryView ?? false,
                       scrollbackOffset: existing?.scrollbackOffset ?? 0,
                     };
                   });
-                  Object.keys(existingTerminals).forEach(id => {
-                      if (!newTerminals[id]) terminalCallbacks.delete(id);
+
+                  Object.keys(currentState.terminals).forEach((id) => {
+                    if (!newTerminals[id]) terminalCallbacks.delete(id);
                   });
+
+                  // Persist layouts
+                  const layoutsToSave: Record<
+                    string,
+                    { x: number; y: number; w: number; h: number }
+                  > = {};
+                  Object.entries(newTerminals).forEach(([id, term]) => {
+                    layoutsToSave[id] = {
+                      x: term.x,
+                      y: term.y,
+                      w: term.w,
+                      h: term.h,
+                    };
+                  });
+                  saveLayouts(layoutsToSave);
+
                   return { terminals: newTerminals };
                 });
                 break;
               }
+
               case "output": {
                 const termState = state.terminals[msg.id];
-                // Only process output if NOT in history view for this terminal
                 if (termState && !termState.isHistoryView) {
                   const cb = terminalCallbacks.get(msg.id);
                   cb?.onData(msg.data);
-                } else {
-                  // console.log(`WS: Ignoring live output for ${msg.id} (history view)`);
                 }
                 break;
               }
+
               case "historyChunk": {
                 const cb = terminalCallbacks.get(msg.id);
                 if (cb) {
-                  // Update the offset in state to match what server sent
-                  set(s => ({
+                  set((s) => ({
                     terminals: {
                       ...s.terminals,
-                      [msg.id]: s.terminals[msg.id] ? {
-                        ...s.terminals[msg.id],
-                        scrollbackOffset: msg.linesBack,
-                        isHistoryView: msg.linesBack > 0 // Ensure history mode if offset > 0
-                      } : undefined
-                    }
+                      [msg.id]: s.terminals[msg.id]
+                        ? {
+                            ...s.terminals[msg.id],
+                            scrollbackOffset: msg.linesBack,
+                            isHistoryView: msg.linesBack > 0,
+                          }
+                        : undefined,
+                    },
                   }));
-                  // Write the historical data (includes screen clear)
                   cb.onData(msg.data);
-                } else {
-                   console.warn(`WS: Received history chunk for unknown terminal ${msg.id}`);
                 }
                 break;
               }
+
               default: {
                 console.warn("WS: Received unknown message type:", msg);
               }
@@ -199,12 +237,14 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
         };
 
         socket.onclose = (event) => {
-          console.log(`WS: Closed. Code: ${event.code}, Clean: ${event.wasClean}`);
+          console.log(
+            `WS: Closed. Code: ${event.code}, Clean: ${event.wasClean}`
+          );
           ws = null;
           set({ connectionState: WebSocket.CLOSED, terminals: {} });
           terminalCallbacks.clear();
           if (!event.wasClean) {
-             scheduleReconnect();
+            scheduleReconnect();
           }
         };
       } catch (error) {
@@ -216,115 +256,143 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
     },
 
     disconnect: () => {
-        clearReconnectTimer();
-        if (ws) {
-            console.log("WS: Closing connection.");
-            ws.close(1000, "User disconnected");
-            ws = null;
-        }
-        set({ connectionState: WebSocket.CLOSED, terminals: {} });
-        terminalCallbacks.clear();
+      clearReconnectTimer();
+      if (ws) {
+        console.log("WS: Closing connection.");
+        ws.close(1000, "User disconnected");
+        ws = null;
+      }
+      set({ connectionState: WebSocket.CLOSED, terminals: {} });
+      terminalCallbacks.clear();
     },
 
-    // --- Terminal Actions ---
     createTerminal: () => sendMessage({ type: "create" }),
     closeTerminal: (id: string) => sendMessage({ type: "close", id }),
-    sendInput: (id: string, data: string) => sendMessage({ type: "input", id, data }),
+    sendInput: (id: string, data: string) =>
+      sendMessage({ type: "input", id, data }),
+
     resizeTerminal: (id: string, cols: number, rows: number) => {
       if (cols > 0 && rows > 0) {
         sendMessage({ type: "resize", id, cols, rows });
-        // Update local state immediately for responsiveness?
-        set(state => ({
-            terminals: {
-                ...state.terminals,
-                [id]: state.terminals[id] ? { ...state.terminals[id], cols, rows } : undefined
-            }
+        set((state) => ({
+          terminals: {
+            ...state.terminals,
+            [id]: state.terminals[id]
+              ? { ...state.terminals[id], cols, rows }
+              : undefined,
+          },
         }));
       }
     },
+
     updateTerminalLayout: (id, layout) => {
+      set((state) => {
+        if (!state.terminals[id]) return {};
+        const updated: Record<string, TerminalState> = {
+          ...state.terminals,
+          [id]: { ...state.terminals[id], ...layout },
+        };
+        // Persist updated layouts
+        const layoutsToSave: Record<
+          string,
+          { x: number; y: number; w: number; h: number }
+        > = {};
+        Object.entries(updated).forEach(([tid, term]) => {
+          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h };
+        });
+        saveLayouts(layoutsToSave);
+        return { terminals: updated };
+      });
+    },
+
+    enterHistoryView: (id: string) => {
+      console.log(`History: Entering view for ${id}`);
       set((state) => {
         if (!state.terminals[id]) return {};
         return {
           terminals: {
             ...state.terminals,
-            [id]: { ...state.terminals[id], ...layout },
+            [id]: {
+              ...state.terminals[id],
+              isHistoryView: true,
+              scrollbackOffset: 1,
+            },
           },
         };
       });
-    },
-
-    // --- History Actions ---
-    enterHistoryView: (id: string) => {
-        console.log(`History: Entering view for ${id}`);
-        set(state => {
-            if (!state.terminals[id]) return {};
-            return {
-                terminals: {
-                    ...state.terminals,
-                    [id]: { ...state.terminals[id], isHistoryView: true, scrollbackOffset: 1 } // Start 1 line back
-                }
-            };
-        });
-        // Request the first page of history
-        sendMessage({ type: "requestHistory", id, linesBack: 1 });
+      sendMessage({ type: "requestHistory", id, linesBack: 1 });
     },
 
     exitHistoryView: (id: string) => {
-        console.log(`History: Exiting view for ${id}`);
-        set(state => {
-            if (!state.terminals[id] || !state.terminals[id].isHistoryView) return {}; // Only exit if in history view
-            return {
-                terminals: {
-                    ...state.terminals,
-                    [id]: { ...state.terminals[id], isHistoryView: false, scrollbackOffset: 0 }
-                }
-            };
-        });
-        // Request the live view (latest screen)
-        sendMessage({ type: "requestHistory", id, linesBack: 0 });
+      console.log(`History: Exiting view for ${id}`);
+      set((state) => {
+        if (!state.terminals[id] || !state.terminals[id].isHistoryView)
+          return {};
+        return {
+          terminals: {
+            ...state.terminals,
+            [id]: {
+              ...state.terminals[id],
+              isHistoryView: false,
+              scrollbackOffset: 0,
+            },
+          },
+        };
+      });
+      sendMessage({ type: "requestHistory", id, linesBack: 0 });
     },
 
     scrollHistory: (id: string, direction: "up" | "down") => {
-        const termState = get().terminals[id];
-        if (!termState) return;
+      const termState = get().terminals[id];
+      if (!termState) return;
 
-        let newOffset = termState.scrollbackOffset;
-        const linesToScroll = Math.max(1, Math.floor(termState.rows / 2)); // Scroll half screen
-        // const linesToScroll = SCROLL_LINES_PER_SCREEN;
+      let newOffset = termState.scrollbackOffset;
+      const linesToScroll = Math.max(1, Math.floor(termState.rows / 2));
 
-        if (!termState.isHistoryView) {
-            // If not in history view, entering via scroll starts near the end
-            newOffset = direction === 'up' ? linesToScroll : 0; // Start scrolling up from near end
-            if (newOffset === 0) return; // Don't scroll down if already at live
-            set(state => ({ terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true } } }));
-            console.log(`History: Entering view via scroll (${direction}) for ${id}`);
+      if (!termState.isHistoryView) {
+        newOffset = direction === "up" ? linesToScroll : 0;
+        if (newOffset === 0) return;
+        set((state) => ({
+          terminals: {
+            ...state.terminals,
+            [id]: { ...termState, isHistoryView: true },
+          },
+        }));
+        console.log(
+          `History: Entering view via scroll (${direction}) for ${id}`
+        );
+      } else {
+        if (direction === "up") {
+          newOffset += linesToScroll;
         } else {
-            if (direction === 'up') {
-                newOffset += linesToScroll;
-            } else {
-                newOffset -= linesToScroll;
-            }
+          newOffset -= linesToScroll;
         }
+      }
 
-        // Clamp offset (cannot be negative)
-        newOffset = Math.max(0, newOffset);
+      newOffset = Math.max(0, newOffset);
+      if (newOffset === termState.scrollbackOffset && termState.isHistoryView)
+        return;
 
-        // Don't send request if offset didn't change or trying to scroll past live view
-        if (newOffset === termState.scrollbackOffset && termState.isHistoryView) return;
-
-        // If the new offset is 0, exit history mode
-        if (newOffset === 0) {
-            get().exitHistoryView(id);
-        } else {
-             // Update offset optimistically? Server confirms via historyChunk.
-             set(state => ({ terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true, scrollbackOffset: newOffset } } }));
-             console.log(`History: Scrolling ${direction} for ${id}, requesting linesBack: ${newOffset}`);
-             sendMessage({ type: "requestHistory", id, linesBack: newOffset });
-        }
+      if (newOffset === 0) {
+        get().exitHistoryView(id);
+      } else {
+        set((state) => ({
+          terminals: {
+            ...state.terminals,
+            [id]: {
+              ...termState,
+              isHistoryView: true,
+              scrollbackOffset: newOffset,
+            },
+          },
+        }));
+        console.log(
+          `History: Scrolling ${direction} for ${id}, requesting linesBack: ${newOffset}`
+        );
+        sendMessage({ type: "requestHistory", id, linesBack: newOffset });
+      }
     },
 
-    // --- Callback Registration ---
     registerTerminalCallbacks: (id, onData, onError, onOtherEvents) => {
       terminalCallbacks.set(id, { onData, onError, onOtherEvents });
       return () => {
