@@ -9,7 +9,7 @@ import {
   WsToServerRequestHistory,
   WsToClientHistoryChunk,
   WsToClientOutput,
-  WsToClientScene
+  WsToClientScene,
 } from "@termimux/types";
 
 // --- Layout & Style Persistence Helpers ---
@@ -24,9 +24,7 @@ interface PersistedLayout {
 function loadLayouts(): Record<string, PersistedLayout> {
   try {
     const raw = localStorage.getItem(LAYOUTS_KEY);
-    if (raw) {
-      return JSON.parse(raw);
-    }
+    if (raw) return JSON.parse(raw);
   } catch (err) {
     console.error("Failed to load layouts from localStorage:", err);
   }
@@ -42,8 +40,7 @@ function saveLayouts(layouts: Record<string, PersistedLayout>): void {
 
 const DEFAULT_FONT_SIZE = 16;
 
-// --- Callbacks & State Types --- 
-
+// --- Callbacks & State Types ---
 interface TerminalCallbacks {
   onData: (data: string) => void;
   onError: (err: Event) => void;
@@ -51,7 +48,10 @@ interface TerminalCallbacks {
 }
 
 export interface TerminalState extends TermiMuxTerminal {
-  x: number; y: number; w: number; h: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
   fontSize: number;
   isHistoryView: boolean;
   scrollbackOffset: number;
@@ -76,6 +76,7 @@ interface TermiMuxState {
     layout: { x: number; y: number; w: number; h: number }
   ) => void;
   updateFontSize: (id: string, fontSize: number) => void;
+  requestHistory: (id: string, linesBack: number) => void;
   enterHistoryView: (id: string) => void;
   exitHistoryView: (id: string) => void;
   scrollHistory: (id: string, direction: "up" | "down") => void;
@@ -105,11 +106,8 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
   const scheduleReconnect = () => {
     clearReconnectTimer();
     if (get().connectionState === WebSocket.CLOSED) {
-      console.log(`WS: Scheduling reconnect in ${reconnectDelay / 1000}s...`);
       reconnectTimer = setTimeout(() => {
-        if (get().connectionState === WebSocket.CLOSED) {
-          get().connect();
-        }
+        if (get().connectionState === WebSocket.CLOSED) get().connect();
       }, reconnectDelay);
     }
   };
@@ -133,247 +131,240 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
       if (ws && ws.readyState !== WebSocket.CLOSED) return;
       clearReconnectTimer();
       set({ connectionState: WebSocket.CONNECTING });
-      console.log(`WS: Connecting to ${get().url}...`);
+      ws = new WebSocket(get().url);
 
-      try {
-        const socket = new WebSocket(get().url);
-        ws = socket;
+      ws.onopen = () => {
+        set({ connectionState: WebSocket.OPEN });
+        clearReconnectTimer();
+        sendMessage({ type: "giveScene" });
+      };
 
-        socket.onopen = () => {
-          console.log("WS: Connected.");
-          set({ connectionState: WebSocket.OPEN });
-          clearReconnectTimer();
-          sendMessage({ type: "giveScene" });
-        };
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data.toString()) as WsToClient;
+          const state = get();
 
-        socket.onmessage = (event) => {
-          try {
-            const msg = JSON.parse(event.data.toString()) as WsToClient;
-            const state = get();
-
-            switch (msg.type) {
-              case "scene": {
-                const serverTerminals = msg.data.terminals;
-                const persistedLayouts = loadLayouts();
-                set((currentState) => {
-                  const existingTerminals = currentState.terminals;
-                  const newTerminals: Record<string, TerminalState> = {};
-
-                  serverTerminals.forEach((serverTerm) => {
-                    const existing = existingTerminals[serverTerm.id];
-                    const persisted = persistedLayouts[serverTerm.id];
-                    newTerminals[serverTerm.id] = {
-                      x: existing?.x ?? persisted?.x ?? 0,
-                      y: existing?.y ?? persisted?.y ?? 0,
-                      w: existing?.w ?? persisted?.w ?? 6,
-                      h: existing?.h ?? persisted?.h ?? 4,
-                      fontSize: existing?.fontSize ?? persisted?.fontSize ?? DEFAULT_FONT_SIZE,
-                      ...serverTerm,
-                      isHistoryView: existing?.isHistoryView ?? false,
-                      scrollbackOffset: existing?.scrollbackOffset ?? 0,
-                    };
-                  });
-
-                  Object.keys(currentState.terminals).forEach((id) => {
-                    if (!newTerminals[id]) terminalCallbacks.delete(id);
-                  });
-
-                  const layoutsToSave: Record<string, PersistedLayout> = {};
-                  Object.entries(newTerminals).forEach(([tid, term]) => {
-                    layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
-                  });
-                  saveLayouts(layoutsToSave);
-
-                  return { terminals: newTerminals };
+          switch (msg.type) {
+            case "scene": {
+              const persisted = loadLayouts();
+              set((cur) => {
+                const newTerms: Record<string, TerminalState> = {};
+                msg.data.terminals.forEach((t) => {
+                  const ex = cur.terminals[t.id];
+                  const p = persisted[t.id] || {};
+                  newTerms[t.id] = {
+                    ...t,
+                    x: ex?.x ?? p.x ?? 0,
+                    y: ex?.y ?? p.y ?? 0,
+                    w: ex?.w ?? p.w ?? 6,
+                    h: ex?.h ?? p.h ?? 4,
+                    fontSize: ex?.fontSize ?? p.fontSize ?? DEFAULT_FONT_SIZE,
+                    isHistoryView: ex?.isHistoryView ?? false,
+                    scrollbackOffset: ex?.scrollbackOffset ?? 0,
+                  };
                 });
-                break;
-              }
-
-              case "output": {
-                const termState = state.terminals[msg.id];
-                if (termState && !termState.isHistoryView) {
-                  const cb = terminalCallbacks.get(msg.id);
-                  cb?.onData(msg.data);
-                }
-                break;
-              }
-
-              case "historyChunk": {
-                const cb = terminalCallbacks.get(msg.id);
-                if (cb) {
-                  set((s) => ({
-                    terminals: {
-                      ...s.terminals,
-                      [msg.id]: s.terminals[msg.id]
-                        ? {
-                            ...s.terminals[msg.id],
-                            scrollbackOffset: msg.linesBack,
-                            isHistoryView: msg.linesBack > 0,
-                          }
-                        : undefined,
-                    },
-                  }));
-                  cb.onData(msg.data);
-                }
-                break;
-              }
-
-              default: {
-                console.warn("WS: Received unknown message type:", msg);
-              }
+                // cleanup callbacks
+                Object.keys(cur.terminals).forEach((id) => {
+                  if (!newTerms[id]) terminalCallbacks.delete(id);
+                });
+                // persist
+                const toSave: Record<string, PersistedLayout> = {};
+                Object.entries(newTerms).forEach(([id, t]) => {
+                  toSave[id] = {
+                    x: t.x,
+                    y: t.y,
+                    w: t.w,
+                    h: t.h,
+                    fontSize: t.fontSize,
+                  };
+                });
+                saveLayouts(toSave);
+                return { terminals: newTerms };
+              });
+              break;
             }
-          } catch (err) {
-            console.error("WS: Error processing message:", err, event.data);
-          }
-        };
 
-        socket.onerror = (err) => {
-          console.error("WS: Error:", err);
-        };
+            case "output": {
+              const ts = state.terminals[msg.id];
+              if (ts && !ts.isHistoryView) {
+                terminalCallbacks.get(msg.id)?.onData(msg.data);
+              }
+              break;
+            }
 
-        socket.onclose = (event) => {
-          console.log(`WS: Closed. Code: ${event.code}, Clean: ${event.wasClean}`);
-          ws = null;
-          set({ connectionState: WebSocket.CLOSED, terminals: {} });
-          terminalCallbacks.clear();
-          if (!event.wasClean) {
-            scheduleReconnect();
+            case "historyChunk": {
+              const cb = terminalCallbacks.get(msg.id);
+              if (cb) {
+                set((s) => ({
+                  terminals: {
+                    ...s.terminals,
+                    [msg.id]: {
+                      ...s.terminals[msg.id]!,
+                      scrollbackOffset: msg.linesBack,
+                      isHistoryView: msg.linesBack > 0,
+                    },
+                  },
+                }));
+                cb.onData(msg.data);
+              }
+              break;
+            }
+
+            default:
+              console.warn("WS: Unknown message", msg);
           }
-        };
-      } catch (error) {
-        console.error("WS: Failed to create WebSocket:", error);
-        set({ connectionState: WebSocket.CLOSED });
+        } catch (e) {
+          console.error("WS: msg parse error", e);
+        }
+      };
+
+      ws.onerror = (e) => console.error("WS error", e);
+      ws.onclose = (ev) => {
         ws = null;
-        scheduleReconnect();
-      }
+        set({ connectionState: WebSocket.CLOSED, terminals: {} });
+        terminalCallbacks.clear();
+        if (!ev.wasClean) scheduleReconnect();
+      };
     },
 
     disconnect: () => {
       clearReconnectTimer();
-      if (ws) {
-        console.log("WS: Closing connection.");
-        ws.close(1000, "User disconnected");
-        ws = null;
-      }
+      if (ws) ws.close(1000, "User disconnected");
+      ws = null;
       set({ connectionState: WebSocket.CLOSED, terminals: {} });
       terminalCallbacks.clear();
     },
 
     createTerminal: () => sendMessage({ type: "create" }),
-    closeTerminal: (id: string) => sendMessage({ type: "close", id }),
-    sendInput: (id: string, data: string) => sendMessage({ type: "input", id, data }),
+    closeTerminal: (id) => sendMessage({ type: "close", id }),
+    sendInput: (id, data) => sendMessage({ type: "input", id, data }),
 
-    resizeTerminal: (id: string, cols: number, rows: number) => {
+    resizeTerminal: (id, cols, rows) => {
       if (cols > 0 && rows > 0) {
         sendMessage({ type: "resize", id, cols, rows });
-        set((state) => ({
+        set((s) => ({
           terminals: {
-            ...state.terminals,
-            [id]: state.terminals[id] ? { ...state.terminals[id], cols, rows } : undefined,
+            ...s.terminals,
+            [id]: { ...s.terminals[id]!, cols, rows },
           },
         }));
       }
     },
 
     updateTerminalLayout: (id, layout) => {
-      set((state) => {
-        if (!state.terminals[id]) return {};
-        const updated: Record<string, TerminalState> = {
-          ...state.terminals,
-          [id]: { ...state.terminals[id], ...layout },
+      set((s) => {
+        if (!s.terminals[id]) return {};
+        const updated = {
+          ...s.terminals,
+          [id]: { ...s.terminals[id], ...layout },
         };
-        const layoutsToSave: Record<string, PersistedLayout> = {};
-        Object.entries(updated).forEach(([tid, term]) => {
-          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
+        // persist
+        const toSave: Record<string, PersistedLayout> = {};
+        Object.entries(updated).forEach(([tid, t]) => {
+          toSave[tid] = {
+            x: t.x,
+            y: t.y,
+            w: t.w,
+            h: t.h,
+            fontSize: t.fontSize,
+          };
         });
-        saveLayouts(layoutsToSave);
+        saveLayouts(toSave);
         return { terminals: updated };
       });
     },
 
-    updateFontSize: (id: string, fontSize: number) => {
-      set((state) => {
-        if (!state.terminals[id]) return {};
-        const updatedTerminals: Record<string, TerminalState> = {
-          ...state.terminals,
-          [id]: { ...state.terminals[id], fontSize },
+    updateFontSize: (id, fontSize) => {
+      set((s) => {
+        if (!s.terminals[id]) return {};
+        const updated = {
+          ...s.terminals,
+          [id]: { ...s.terminals[id], fontSize },
         };
-        const layoutsToSave: Record<string, PersistedLayout> = {};
-        Object.entries(updatedTerminals).forEach(([tid, term]) => {
-          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
+        // persist
+        const toSave: Record<string, PersistedLayout> = {};
+        Object.entries(updated).forEach(([tid, t]) => {
+          toSave[tid] = {
+            x: t.x,
+            y: t.y,
+            w: t.w,
+            h: t.h,
+            fontSize: t.fontSize,
+          };
         });
-        saveLayouts(layoutsToSave);
-        return { terminals: updatedTerminals };
+        saveLayouts(toSave);
+        return { terminals: updated };
       });
     },
 
-    enterHistoryView: (id: string) => {
-      console.log(`History: Entering view for ${id}`);
-      set((state) => {
-        if (!state.terminals[id]) return {};
-        return {
-          terminals: {
-            ...state.terminals,
-            [id]: { ...state.terminals[id], isHistoryView: true, scrollbackOffset: 1 },
+    requestHistory: (id, linesBack) => {
+      sendMessage({ type: "requestHistory", id, linesBack });
+    },
+
+    enterHistoryView: (id) => {
+      set((s) => ({
+        terminals: {
+          ...s.terminals,
+          [id]: {
+            ...s.terminals[id]!,
+            isHistoryView: true,
+            scrollbackOffset: 1,
           },
-        };
-      });
+        },
+      }));
       sendMessage({ type: "requestHistory", id, linesBack: 1 });
     },
 
-    exitHistoryView: (id: string) => {
-      console.log(`History: Exiting view for ${id}`);
-      set((state) => {
-        if (!state.terminals[id] || !state.terminals[id].isHistoryView) return {};
-        return {
-          terminals: {
-            ...state.terminals,
-            [id]: { ...state.terminals[id], isHistoryView: false, scrollbackOffset: 0 },
+    exitHistoryView: (id) => {
+      set((s) => ({
+        terminals: {
+          ...s.terminals,
+          [id]: {
+            ...s.terminals[id]!,
+            isHistoryView: false,
+            scrollbackOffset: 0,
           },
-        };
-      });
+        },
+      }));
       sendMessage({ type: "requestHistory", id, linesBack: 0 });
     },
 
-    scrollHistory: (id: string, direction: "up" | "down") => {
-      const termState = get().terminals[id];
-      if (!termState) return;
+    scrollHistory: (id, dir) => {
+      const ts = get().terminals[id];
+      if (!ts) return;
+      let offset = ts.scrollbackOffset;
+      const step = Math.max(1, Math.floor(ts.rows / 2));
 
-      let newOffset = termState.scrollbackOffset;
-      const linesToScroll = Math.max(1, Math.floor(termState.rows / 2));
-
-      if (!termState.isHistoryView) {
-        newOffset = direction === 'up' ? linesToScroll : 0;
-        if (newOffset === 0) return;
-        set((state) => ({ terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true } } }));
-        console.log(`History: Entering view via scroll (${direction}) for ${id}`);
+      if (!ts.isHistoryView) {
+        offset = dir === "up" ? step : 0;
+        if (offset === 0) return;
+        set((s) => ({
+          terminals: {
+            ...s.terminals,
+            [id]: { ...ts, isHistoryView: true },
+          },
+        }));
       } else {
-        if (direction === 'up') {
-          newOffset += linesToScroll;
-        } else {
-          newOffset -= linesToScroll;
-        }
+        offset = dir === "up" ? offset + step : offset - step;
       }
-
-      newOffset = Math.max(0, newOffset);
-      if (newOffset === termState.scrollbackOffset && termState.isHistoryView) return;
-
-      if (newOffset === 0) {
+      offset = Math.max(0, offset);
+      if (offset === ts.scrollbackOffset && ts.isHistoryView) return;
+      if (offset === 0) {
         get().exitHistoryView(id);
       } else {
-        set((state) => ({
-          terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true, scrollbackOffset: newOffset } },
+        set((s) => ({
+          terminals: {
+            ...s.terminals,
+            [id]: { ...ts, isHistoryView: true, scrollbackOffset: offset },
+          },
         }));
-        console.log(`History: Scrolling ${direction} for ${id}, requesting linesBack: ${newOffset}`);
-        sendMessage({ type: "requestHistory", id, linesBack: newOffset });
+        sendMessage({ type: "requestHistory", id, linesBack: offset });
       }
     },
 
     registerTerminalCallbacks: (id, onData, onError, onOtherEvents) => {
       terminalCallbacks.set(id, { onData, onError, onOtherEvents });
-      return () => {
-        terminalCallbacks.delete(id);
-      };
+      return () => terminalCallbacks.delete(id);
     },
   };
 });

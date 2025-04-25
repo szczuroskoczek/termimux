@@ -13,57 +13,47 @@ const MAX_FONT_SIZE = 40;
 const DEFAULT_FONT_SIZE = 16;
 
 export default function TerminalComponent({ id }: TerminalComponentProps) {
-  // --- Refs ---
   const terminalElRef = useRef<HTMLDivElement>(null);
   const terminalInstanceRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const disposablesRef = useRef<IDisposable[]>([]);
 
-  // --- Zustand Store Access ---
-  const sendInput = useWsConnection((state) => state.sendInput);
-  const resizeTerminal = useWsConnection((state) => state.resizeTerminal);
-  const updateFontSize = useWsConnection((state) => state.updateFontSize);
+  const sendInput = useWsConnection((s) => s.sendInput);
+  const resizeTerminal = useWsConnection((s) => s.resizeTerminal);
+  const updateFontSize = useWsConnection((s) => s.updateFontSize);
+  const requestHistory = useWsConnection((s) => s.requestHistory);
   const registerTerminalCallbacks = useWsConnection(
-    (state) => state.registerTerminalCallbacks
+    (s) => s.registerTerminalCallbacks
   );
-  const scrollHistory = useWsConnection((state) => state.scrollHistory);
-  const exitHistoryView = useWsConnection((state) => state.exitHistoryView);
+  const scrollHistory = useWsConnection((s) => s.scrollHistory);
+  const exitHistoryView = useWsConnection((s) => s.exitHistoryView);
 
-  // --- Retrieve persisted font size ---
-  const persistedFontSize = useWsConnection(
-    (state) => state.terminals[id]?.fontSize
-  );
+  // Pull persisted font size or use default
+  const persistedFontSize = useWsConnection((s) => s.terminals[id]?.fontSize);
   const initialFontSize = persistedFontSize ?? DEFAULT_FONT_SIZE;
-
-  // --- Event Handlers ---
 
   const handleWheel = useCallback(
     (event: WheelEvent): boolean => {
       if (event.shiftKey) {
         const term = terminalInstanceRef.current;
-        const fitAddon = fitAddonRef.current;
-        if (!term || !fitAddon) return false;
-        const termOptions = term.options as Required<ITerminalOptions>;
-        const currentSize = termOptions.fontSize;
-        let newSize = currentSize;
-        if (event.deltaY < 0) {
-          newSize = Math.min(MAX_FONT_SIZE, currentSize + 1);
-        } else if (event.deltaY > 0) {
-          newSize = Math.max(MIN_FONT_SIZE, currentSize - 1);
-        }
-        if (newSize !== currentSize) {
-          term.options.fontSize = newSize;
+        const fit = fitAddonRef.current;
+        if (!term || !fit) return false;
+        const opts = term.options as Required<ITerminalOptions>;
+        const current = opts.fontSize;
+        let next = current;
+        if (event.deltaY < 0) next = Math.min(MAX_FONT_SIZE, current + 1);
+        else if (event.deltaY > 0) next = Math.max(MIN_FONT_SIZE, current - 1);
+
+        if (next !== current) {
+          term.options.fontSize = next;
           try {
-            fitAddon.fit();
+            fit.fit();
             resizeTerminal(id, term.cols, term.rows);
-            updateFontSize(id, newSize);
+            updateFontSize(id, next);
             return false;
-          } catch (fitError) {
-            console.error(
-              `Terminal ${id}: Error fitting after zoom:`,
-              fitError
-            );
+          } catch (e) {
+            console.error(`Terminal ${id}: zoom fit error`, e);
           }
         }
       }
@@ -73,36 +63,33 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
   );
 
   const handleResize = useCallback(() => {
-    const fitAddon = fitAddonRef.current;
+    const fit = fitAddonRef.current;
     const term = terminalInstanceRef.current;
-    if (fitAddon && term) {
+    if (fit && term) {
       try {
-        fitAddon.fit();
+        fit.fit();
         resizeTerminal(id, term.cols, term.rows);
-      } catch (err) {
-        if (!(err instanceof Error) || !err.message.includes("invalid")) {
-          console.error(`Terminal ${id}: ResizeObserver fit error:`, err);
-        }
+      } catch (e: any) {
+        if (!e.message.includes("invalid"))
+          console.error(`Terminal ${id}: resize error`, e);
       }
     }
   }, [id, resizeTerminal]);
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.shiftKey) {
-        if (event.key === "ArrowUp") {
-          event.preventDefault();
+    (ev: React.KeyboardEvent<HTMLDivElement>) => {
+      if (ev.shiftKey) {
+        if (ev.key === "ArrowUp") {
+          ev.preventDefault();
           scrollHistory(id, "up");
-        } else if (event.key === "ArrowDown") {
-          event.preventDefault();
+        } else if (ev.key === "ArrowDown") {
+          ev.preventDefault();
           scrollHistory(id, "down");
         }
         return false;
-      } else if (event.key === "Escape") {
-        const inHistory =
-          useWsConnection.getState().terminals[id]?.isHistoryView;
-        if (inHistory) {
-          event.preventDefault();
+      } else if (ev.key === "Escape") {
+        if (useWsConnection.getState().terminals[id]?.isHistoryView) {
+          ev.preventDefault();
           exitHistoryView(id);
         }
         return false;
@@ -113,32 +100,21 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
   );
 
   useEffect(() => {
-    const terminalContainer = terminalElRef.current;
-    if (!terminalContainer) {
-      console.error(
-        `Terminal ${id}: Container element ref is null during useEffect.`
-      );
-      return;
-    }
-    if (terminalInstanceRef.current) {
-      console.warn(`Terminal ${id}: Attempted re-initialization.`);
-      return;
-    }
-    console.log(`[Init] Terminal ${id}`);
+    const container = terminalElRef.current;
+    if (!container || terminalInstanceRef.current) return;
 
-    let initSuccess = false;
-    let observerAttached = false;
-    let unregisterWsCallbacks: (() => void) | null = null;
+    let initOK = false;
+    let unregister: (() => void) | null = null;
 
     try {
-      // 1. Create Terminal Instance with persisted font size
+      // 1. Create terminal with persisted font
       const term = new Terminal({
         cursorBlink: true,
         convertEol: true,
         scrollback: 0,
         fontSize: initialFontSize,
         fontFamily: "monospace",
-        theme: { background: "#000000" },
+        theme: { background: "#000" },
         allowProposedApi: true,
       });
       terminalInstanceRef.current = term;
@@ -146,90 +122,68 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
       term.attachCustomWheelEventHandler(handleWheel);
       term.attachCustomKeyEventHandler(handleKeyDown);
 
-      // 2. Load Addons
-      const fitAddon = new FitAddon();
-      fitAddonRef.current = fitAddon;
-      term.loadAddon(fitAddon);
+      // 2. Fit addon
+      const fit = new FitAddon();
+      fitAddonRef.current = fit;
+      term.loadAddon(fit);
 
-      // 3. Mount Terminal in DOM
-      term.open(terminalContainer);
+      // 3. Mount
+      term.open(container);
 
-      // 4. Initial Fit
-      const initialFitTimeout = setTimeout(() => {
-        const currentTerm = terminalInstanceRef.current;
-        const currentFitAddon = fitAddonRef.current;
-        if (currentTerm && currentFitAddon) {
-          try {
-            currentFitAddon.fit();
-            console.log(
-              `[Fit] Terminal ${id} initial: ${currentTerm.cols}x${currentTerm.rows}`
-            );
-            resizeTerminal(id, currentTerm.cols, currentTerm.rows);
-          } catch (fitErr) {
-            console.error(`Terminal ${id}: Error during initial fit:`, fitErr);
-          }
-        }
+      // 4. Initial fit + history fetch
+      const tmo = setTimeout(() => {
+        const ct = terminalInstanceRef.current!;
+        fit.fit();
+        resizeTerminal(id, ct.cols, ct.rows);
+        // fetch last 'rows' worth of history
+        requestHistory(id, ct.rows);
       }, 0);
-      disposablesRef.current.push({
-        dispose: () => clearTimeout(initialFitTimeout),
-      });
+      disposablesRef.current.push({ dispose: () => clearTimeout(tmo) });
 
-      // 5. Register WebSocket Callbacks
-      unregisterWsCallbacks = registerTerminalCallbacks(
+      // 5. WS callbacks
+      unregister = registerTerminalCallbacks(
         id,
         (data) => terminalInstanceRef.current?.write(data),
-        (err) => console.error(`Terminal ${id}: WebSocket error:`, err),
-        (evt) => console.log(`Terminal ${id}: Unhandled WebSocket event:`, evt)
+        (err) => console.error(`Terminal ${id} WS error`, err),
+        (evt) => console.log(`Terminal ${id} WS evt`, evt)
       );
 
-      // 6. Handle User Input
-      const dataListener = term.onData((data) => {
-        sendInput(id, data);
-      });
-      disposablesRef.current.push(dataListener);
+      // 6. User input
+      disposablesRef.current.push(term.onData((d) => sendInput(id, d)));
 
-      // 7. Handle Container Resizing
-      const resizeObserver = new ResizeObserver(handleResize);
-      resizeObserver.observe(terminalContainer);
-      resizeObserverRef.current = resizeObserver;
-      observerAttached = true;
+      // 7. Resize observer
+      const ro = new ResizeObserver(handleResize);
+      ro.observe(container);
+      resizeObserverRef.current = ro;
 
-      // 9. Set Focusable for Keyboard Events
-      terminalContainer.setAttribute("tabindex", "0");
+      // focusable
+      container.setAttribute("tabindex", "0");
 
-      initSuccess = true;
-    } catch (initError) {
-      console.error(
-        `Terminal ${id}: Failed during initialization phase:`,
-        initError
-      );
-      if (observerAttached) resizeObserverRef.current?.disconnect();
-      unregisterWsCallbacks?.();
+      initOK = true;
+    } catch (e) {
+      console.error(`Terminal ${id} init failed`, e);
+    }
+
+    return () => {
+      if (resizeObserverRef.current) resizeObserverRef.current.disconnect();
+      if (initOK && unregister) unregister();
       disposablesRef.current.forEach((d) => d.dispose());
       terminalInstanceRef.current?.dispose();
       terminalInstanceRef.current = null;
       fitAddonRef.current = null;
-      resizeObserverRef.current = null;
-      disposablesRef.current = [];
-    }
-
-    return () => {
-      console.log(`[Cleanup] Terminal ${id}`);
-      const observer = resizeObserverRef.current;
-      const instance = terminalInstanceRef.current;
-
-      observer?.disconnect();
-      if (initSuccess && unregisterWsCallbacks) {
-        unregisterWsCallbacks();
-      }
-      disposablesRef.current.forEach((d) => d.dispose());
-      instance?.dispose();
-      terminalInstanceRef.current = null;
-      fitAddonRef.current = null;
-      resizeObserverRef.current = null;
       disposablesRef.current = [];
     };
-  }, [id, handleWheel, handleKeyDown, handleResize, initialFontSize]);
+  }, [
+    id,
+    handleWheel,
+    handleKeyDown,
+    handleResize,
+    initialFontSize,
+    resizeTerminal,
+    requestHistory,
+    registerTerminalCallbacks,
+    sendInput,
+  ]);
 
   return (
     <div
@@ -242,7 +196,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
         padding: "2px",
         outline: "none",
       }}
-      tabIndex={0}
     />
   );
 }
