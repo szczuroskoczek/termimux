@@ -23,16 +23,21 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
   // --- Zustand Store Access ---
   const sendInput = useWsConnection((state) => state.sendInput);
   const resizeTerminal = useWsConnection((state) => state.resizeTerminal);
+  const updateFontSize = useWsConnection((state) => state.updateFontSize);
   const registerTerminalCallbacks = useWsConnection(
     (state) => state.registerTerminalCallbacks
   );
-  // History actions
   const scrollHistory = useWsConnection((state) => state.scrollHistory);
   const exitHistoryView = useWsConnection((state) => state.exitHistoryView);
 
+  // --- Retrieve persisted font size ---
+  const persistedFontSize = useWsConnection(
+    (state) => state.terminals[id]?.fontSize
+  );
+  const initialFontSize = persistedFontSize ?? DEFAULT_FONT_SIZE;
+
   // --- Event Handlers ---
 
-  // Handles Shift + Mouse Wheel for zooming
   const handleWheel = useCallback(
     (event: WheelEvent): boolean => {
       if (event.shiftKey) {
@@ -52,6 +57,7 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
           try {
             fitAddon.fit();
             resizeTerminal(id, term.cols, term.rows);
+            updateFontSize(id, newSize);
             return false;
           } catch (fitError) {
             console.error(
@@ -63,10 +69,9 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
       }
       return true;
     },
-    [id, resizeTerminal]
+    [id, resizeTerminal, updateFontSize]
   );
 
-  // Handles container resize events
   const handleResize = useCallback(() => {
     const fitAddon = fitAddonRef.current;
     const term = terminalInstanceRef.current;
@@ -82,7 +87,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
     }
   }, [id, resizeTerminal]);
 
-  // Handles keyboard events for history navigation
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.shiftKey) {
@@ -94,14 +98,11 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
           scrollHistory(id, "down");
         }
         return false;
-        // Allow other Shift + key combinations
       } else if (event.key === "Escape") {
-        // Check if we are currently in history view before exiting
-        // This check might be better inside the Zustand action itself
         const inHistory =
           useWsConnection.getState().terminals[id]?.isHistoryView;
         if (inHistory) {
-          event.preventDefault(); // Prevent potential browser default escape behavior
+          event.preventDefault();
           exitHistoryView(id);
         }
         return false;
@@ -111,7 +112,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
     [id, scrollHistory, exitHistoryView]
   );
 
-  // --- Initialization and Cleanup Effect ---
   useEffect(() => {
     const terminalContainer = terminalElRef.current;
     if (!terminalContainer) {
@@ -131,12 +131,12 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
     let unregisterWsCallbacks: (() => void) | null = null;
 
     try {
-      // 1. Create Terminal Instance
+      // 1. Create Terminal Instance with persisted font size
       const term = new Terminal({
         cursorBlink: true,
         convertEol: true,
-        scrollback: 0, // HISTORY IS SERVER-SIDE NOW
-        fontSize: DEFAULT_FONT_SIZE,
+        scrollback: 0,
+        fontSize: initialFontSize,
         fontFamily: "monospace",
         theme: { background: "#000000" },
         allowProposedApi: true,
@@ -174,7 +174,7 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
         dispose: () => clearTimeout(initialFitTimeout),
       });
 
-      // 5. Register WebSocket Callbacks (onData now handles history chunks too)
+      // 5. Register WebSocket Callbacks
       unregisterWsCallbacks = registerTerminalCallbacks(
         id,
         (data) => terminalInstanceRef.current?.write(data),
@@ -184,9 +184,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
 
       // 6. Handle User Input
       const dataListener = term.onData((data) => {
-        // Check if in history view? Maybe not needed if server handles input correctly?
-        // For simplicity, assume input should always go to server.
-        // If user types while in history view, it goes to the live PTY.
         sendInput(id, data);
       });
       disposablesRef.current.push(dataListener);
@@ -199,9 +196,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
 
       // 9. Set Focusable for Keyboard Events
       terminalContainer.setAttribute("tabindex", "0");
-
-      // 10. Optional: Initial focus
-      // term.focus();
 
       initSuccess = true;
     } catch (initError) {
@@ -219,7 +213,6 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
       disposablesRef.current = [];
     }
 
-    // --- Cleanup Function ---
     return () => {
       console.log(`[Cleanup] Terminal ${id}`);
       const observer = resizeObserverRef.current;
@@ -236,8 +229,7 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
       resizeObserverRef.current = null;
       disposablesRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]); // Keep dependencies stable
+  }, [id, handleWheel, handleKeyDown, handleResize, initialFontSize]);
 
   return (
     <div
@@ -248,9 +240,9 @@ export default function TerminalComponent({ id }: TerminalComponentProps) {
         overflow: "hidden",
         backgroundColor: "black",
         padding: "2px",
-        outline: "none", // Remove focus outline from div if desired
+        outline: "none",
       }}
-      tabIndex={0} // Make the div focusable
+      tabIndex={0}
     />
   );
 }

@@ -9,15 +9,19 @@ import {
   WsToServerRequestHistory,
   WsToClientHistoryChunk,
   WsToClientOutput,
-  WsToClientScene,
+  WsToClientScene
 } from "@termimux/types";
 
-// --- Layout Persistence Helpers ---
+// --- Layout & Style Persistence Helpers ---
 const LAYOUTS_KEY = "termimux_layouts";
-function loadLayouts(): Record<
-  string,
-  { x: number; y: number; w: number; h: number }
-> {
+interface PersistedLayout {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fontSize?: number;
+}
+function loadLayouts(): Record<string, PersistedLayout> {
   try {
     const raw = localStorage.getItem(LAYOUTS_KEY);
     if (raw) {
@@ -28,9 +32,7 @@ function loadLayouts(): Record<
   }
   return {};
 }
-function saveLayouts(
-  layouts: Record<string, { x: number; y: number; w: number; h: number }>
-): void {
+function saveLayouts(layouts: Record<string, PersistedLayout>): void {
   try {
     localStorage.setItem(LAYOUTS_KEY, JSON.stringify(layouts));
   } catch (err) {
@@ -38,7 +40,9 @@ function saveLayouts(
   }
 }
 
-// --- Callbacks & State Types ---
+const DEFAULT_FONT_SIZE = 16;
+
+// --- Callbacks & State Types --- 
 
 interface TerminalCallbacks {
   onData: (data: string) => void;
@@ -47,10 +51,8 @@ interface TerminalCallbacks {
 }
 
 export interface TerminalState extends TermiMuxTerminal {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  x: number; y: number; w: number; h: number;
+  fontSize: number;
   isHistoryView: boolean;
   scrollbackOffset: number;
 }
@@ -73,6 +75,7 @@ interface TermiMuxState {
     id: string,
     layout: { x: number; y: number; w: number; h: number }
   ) => void;
+  updateFontSize: (id: string, fontSize: number) => void;
   enterHistoryView: (id: string) => void;
   exitHistoryView: (id: string) => void;
   scrollHistory: (id: string, direction: "up" | "down") => void;
@@ -164,6 +167,7 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
                       y: existing?.y ?? persisted?.y ?? 0,
                       w: existing?.w ?? persisted?.w ?? 6,
                       h: existing?.h ?? persisted?.h ?? 4,
+                      fontSize: existing?.fontSize ?? persisted?.fontSize ?? DEFAULT_FONT_SIZE,
                       ...serverTerm,
                       isHistoryView: existing?.isHistoryView ?? false,
                       scrollbackOffset: existing?.scrollbackOffset ?? 0,
@@ -174,18 +178,9 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
                     if (!newTerminals[id]) terminalCallbacks.delete(id);
                   });
 
-                  // Persist layouts
-                  const layoutsToSave: Record<
-                    string,
-                    { x: number; y: number; w: number; h: number }
-                  > = {};
-                  Object.entries(newTerminals).forEach(([id, term]) => {
-                    layoutsToSave[id] = {
-                      x: term.x,
-                      y: term.y,
-                      w: term.w,
-                      h: term.h,
-                    };
+                  const layoutsToSave: Record<string, PersistedLayout> = {};
+                  Object.entries(newTerminals).forEach(([tid, term]) => {
+                    layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
                   });
                   saveLayouts(layoutsToSave);
 
@@ -237,9 +232,7 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
         };
 
         socket.onclose = (event) => {
-          console.log(
-            `WS: Closed. Code: ${event.code}, Clean: ${event.wasClean}`
-          );
+          console.log(`WS: Closed. Code: ${event.code}, Clean: ${event.wasClean}`);
           ws = null;
           set({ connectionState: WebSocket.CLOSED, terminals: {} });
           terminalCallbacks.clear();
@@ -268,8 +261,7 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
 
     createTerminal: () => sendMessage({ type: "create" }),
     closeTerminal: (id: string) => sendMessage({ type: "close", id }),
-    sendInput: (id: string, data: string) =>
-      sendMessage({ type: "input", id, data }),
+    sendInput: (id: string, data: string) => sendMessage({ type: "input", id, data }),
 
     resizeTerminal: (id: string, cols: number, rows: number) => {
       if (cols > 0 && rows > 0) {
@@ -277,9 +269,7 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
         set((state) => ({
           terminals: {
             ...state.terminals,
-            [id]: state.terminals[id]
-              ? { ...state.terminals[id], cols, rows }
-              : undefined,
+            [id]: state.terminals[id] ? { ...state.terminals[id], cols, rows } : undefined,
           },
         }));
       }
@@ -292,16 +282,28 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
           ...state.terminals,
           [id]: { ...state.terminals[id], ...layout },
         };
-        // Persist updated layouts
-        const layoutsToSave: Record<
-          string,
-          { x: number; y: number; w: number; h: number }
-        > = {};
+        const layoutsToSave: Record<string, PersistedLayout> = {};
         Object.entries(updated).forEach(([tid, term]) => {
-          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h };
+          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
         });
         saveLayouts(layoutsToSave);
         return { terminals: updated };
+      });
+    },
+
+    updateFontSize: (id: string, fontSize: number) => {
+      set((state) => {
+        if (!state.terminals[id]) return {};
+        const updatedTerminals: Record<string, TerminalState> = {
+          ...state.terminals,
+          [id]: { ...state.terminals[id], fontSize },
+        };
+        const layoutsToSave: Record<string, PersistedLayout> = {};
+        Object.entries(updatedTerminals).forEach(([tid, term]) => {
+          layoutsToSave[tid] = { x: term.x, y: term.y, w: term.w, h: term.h, fontSize: term.fontSize };
+        });
+        saveLayouts(layoutsToSave);
+        return { terminals: updatedTerminals };
       });
     },
 
@@ -312,11 +314,7 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
         return {
           terminals: {
             ...state.terminals,
-            [id]: {
-              ...state.terminals[id],
-              isHistoryView: true,
-              scrollbackOffset: 1,
-            },
+            [id]: { ...state.terminals[id], isHistoryView: true, scrollbackOffset: 1 },
           },
         };
       });
@@ -326,16 +324,11 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
     exitHistoryView: (id: string) => {
       console.log(`History: Exiting view for ${id}`);
       set((state) => {
-        if (!state.terminals[id] || !state.terminals[id].isHistoryView)
-          return {};
+        if (!state.terminals[id] || !state.terminals[id].isHistoryView) return {};
         return {
           terminals: {
             ...state.terminals,
-            [id]: {
-              ...state.terminals[id],
-              isHistoryView: false,
-              scrollbackOffset: 0,
-            },
+            [id]: { ...state.terminals[id], isHistoryView: false, scrollbackOffset: 0 },
           },
         };
       });
@@ -350,19 +343,12 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
       const linesToScroll = Math.max(1, Math.floor(termState.rows / 2));
 
       if (!termState.isHistoryView) {
-        newOffset = direction === "up" ? linesToScroll : 0;
+        newOffset = direction === 'up' ? linesToScroll : 0;
         if (newOffset === 0) return;
-        set((state) => ({
-          terminals: {
-            ...state.terminals,
-            [id]: { ...termState, isHistoryView: true },
-          },
-        }));
-        console.log(
-          `History: Entering view via scroll (${direction}) for ${id}`
-        );
+        set((state) => ({ terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true } } }));
+        console.log(`History: Entering view via scroll (${direction}) for ${id}`);
       } else {
-        if (direction === "up") {
+        if (direction === 'up') {
           newOffset += linesToScroll;
         } else {
           newOffset -= linesToScroll;
@@ -370,25 +356,15 @@ const useWsConnection = create<TermiMuxState>((set, get) => {
       }
 
       newOffset = Math.max(0, newOffset);
-      if (newOffset === termState.scrollbackOffset && termState.isHistoryView)
-        return;
+      if (newOffset === termState.scrollbackOffset && termState.isHistoryView) return;
 
       if (newOffset === 0) {
         get().exitHistoryView(id);
       } else {
         set((state) => ({
-          terminals: {
-            ...state.terminals,
-            [id]: {
-              ...termState,
-              isHistoryView: true,
-              scrollbackOffset: newOffset,
-            },
-          },
+          terminals: { ...state.terminals, [id]: { ...termState, isHistoryView: true, scrollbackOffset: newOffset } },
         }));
-        console.log(
-          `History: Scrolling ${direction} for ${id}, requesting linesBack: ${newOffset}`
-        );
+        console.log(`History: Scrolling ${direction} for ${id}, requesting linesBack: ${newOffset}`);
         sendMessage({ type: "requestHistory", id, linesBack: newOffset });
       }
     },
